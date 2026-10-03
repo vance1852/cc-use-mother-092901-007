@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from .claims import ClaimsService
 from .errors import DomainError, ValidationError
 from .service import DomainService
 from .storage import Database
@@ -48,6 +49,62 @@ def route(service: DomainService, method: str, path: str, body: dict[str, Any] |
             query = parse_qs(parsed.query)
             after = int(query.get("after_sequence", ["0"])[0])
             return 200, {"items": service.audit_events(after)}
+        if method == "POST" and parsed.path == "/waybills":
+            receipt = service.register_waybill(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/handovers":
+            receipt = service.record_handover(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/exceptions":
+            receipt = service.register_exception(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/claim-items":
+            receipt = service.open_claim_item(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/evidence":
+            receipt = service.submit_evidence(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/liability-drafts":
+            receipt = service.create_liability_draft(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/draft-responses":
+            receipt = service.respond_to_draft(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/arbitrations":
+            receipt = service.record_arbitration(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/settlements":
+            receipt = service.settle_allocation(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/reviews":
+            receipt = service.request_review(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/review-closures":
+            receipt = service.close_review(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "GET" and parsed.path == "/waybill-view":
+            query = parse_qs(parsed.query)
+            return 200, service.get_waybill_view(actor_id=actor_id,
+                                                 waybill_id=query.get("waybill_id", [""])[0])
+        if method == "GET" and parsed.path == "/claim-item-view":
+            query = parse_qs(parsed.query)
+            return 200, service.get_claim_item_view(actor_id=actor_id,
+                                                    claim_item_id=query.get("claim_item_id", [""])[0])
+        if method == "GET" and parsed.path == "/handover-history":
+            query = parse_qs(parsed.query)
+            return 200, {"items": service.list_handover_history(
+                actor_id=actor_id, waybill_id=query.get("waybill_id", [""])[0],
+                group_id=query.get("group_id", [""])[0],
+                from_seq=int(query.get("from_seq", ["0"])[0]),
+                to_seq=int(query.get("to_seq", ["0"])[0]))}
+        if method == "GET" and parsed.path == "/conservation-report":
+            query = parse_qs(parsed.query)
+            return 200, service.conservation_report(actor_id=actor_id,
+                                                    waybill_id=query.get("waybill_id", [""])[0])
+        if method == "GET" and parsed.path == "/decision-basis":
+            query = parse_qs(parsed.query)
+            return 200, service.decision_basis(actor_id=actor_id,
+                                               decision_id=query.get("decision_id", [""])[0])
         return 404, {"error": "route_not_found", "message": "接口不存在"}
     except DomainError as exc:
         return exc.status, {"error": exc.code, "message": str(exc)}
@@ -99,7 +156,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
     database = Database(args.database)
-    Handler.service = DomainService(database)
+    Handler.service = ClaimsService(database)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     try:
         server.serve_forever()

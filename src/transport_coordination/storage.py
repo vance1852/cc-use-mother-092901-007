@@ -63,6 +63,154 @@ CREATE TABLE IF NOT EXISTS audit_events (
     event_hash TEXT NOT NULL UNIQUE,
     occurred_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS waybills (
+    waybill_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL REFERENCES sites(site_id),
+    customer_org_id TEXT NOT NULL REFERENCES organizations(organization_id),
+    status TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES actors(actor_id),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS segment_contracts (
+    segment_id TEXT PRIMARY KEY,
+    waybill_id TEXT NOT NULL REFERENCES waybills(waybill_id),
+    seq INTEGER NOT NULL CHECK(seq >= 1),
+    mode TEXT NOT NULL,
+    carrier_org_id TEXT NOT NULL REFERENCES organizations(organization_id),
+    liability_limit_minor INTEGER NOT NULL CHECK(liability_limit_minor >= 0),
+    UNIQUE(waybill_id, seq)
+);
+CREATE TABLE IF NOT EXISTS container_groups (
+    group_id TEXT PRIMARY KEY,
+    waybill_id TEXT NOT NULL REFERENCES waybills(waybill_id),
+    group_no TEXT NOT NULL,
+    quantity INTEGER NOT NULL CHECK(quantity > 0),
+    description TEXT NOT NULL,
+    UNIQUE(waybill_id, group_no)
+);
+CREATE TABLE IF NOT EXISTS seals (
+    seal_id TEXT PRIMARY KEY,
+    group_id TEXT NOT NULL REFERENCES container_groups(group_id),
+    seal_no TEXT NOT NULL,
+    UNIQUE(group_id, seal_no)
+);
+CREATE TABLE IF NOT EXISTS handover_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    waybill_id TEXT NOT NULL REFERENCES waybills(waybill_id),
+    group_id TEXT NOT NULL REFERENCES container_groups(group_id),
+    from_seq INTEGER NOT NULL,
+    to_seq INTEGER NOT NULL,
+    version INTEGER NOT NULL CHECK(version >= 1),
+    occurred_at TEXT NOT NULL,
+    quantity_received INTEGER NOT NULL CHECK(quantity_received >= 0),
+    seal_intact INTEGER NOT NULL CHECK(seal_intact IN (0, 1)),
+    condition TEXT NOT NULL,
+    recorded_by TEXT NOT NULL REFERENCES actors(actor_id),
+    created_at TEXT NOT NULL,
+    UNIQUE(waybill_id, group_id, from_seq, to_seq, version)
+);
+CREATE TABLE IF NOT EXISTS waybill_exceptions (
+    exception_id TEXT PRIMARY KEY,
+    waybill_id TEXT NOT NULL REFERENCES waybills(waybill_id),
+    group_id TEXT NOT NULL REFERENCES container_groups(group_id),
+    category TEXT NOT NULL,
+    exception_key TEXT NOT NULL,
+    quantity INTEGER NOT NULL CHECK(quantity > 0),
+    detected_seq INTEGER NOT NULL CHECK(detected_seq >= 0),
+    source_system TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES actors(actor_id),
+    created_at TEXT NOT NULL,
+    UNIQUE(waybill_id, exception_key)
+);
+CREATE TABLE IF NOT EXISTS claim_items (
+    claim_item_id TEXT PRIMARY KEY,
+    exception_id TEXT NOT NULL REFERENCES waybill_exceptions(exception_id),
+    waybill_id TEXT NOT NULL REFERENCES waybills(waybill_id),
+    category TEXT NOT NULL,
+    quantity INTEGER NOT NULL CHECK(quantity > 0),
+    claimed_minor INTEGER NOT NULL CHECK(claimed_minor > 0),
+    evidence_deadline TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES actors(actor_id),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS evidence_items (
+    evidence_id TEXT PRIMARY KEY,
+    claim_item_id TEXT NOT NULL REFERENCES claim_items(claim_item_id),
+    submitted_by_org TEXT NOT NULL,
+    submitted_by TEXT NOT NULL REFERENCES actors(actor_id),
+    kind TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    late INTEGER NOT NULL CHECK(late IN (0, 1)),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS liability_drafts (
+    draft_id TEXT PRIMARY KEY,
+    claim_item_id TEXT NOT NULL REFERENCES claim_items(claim_item_id),
+    version INTEGER NOT NULL CHECK(version >= 1),
+    awarded_minor INTEGER NOT NULL CHECK(awarded_minor >= 0),
+    basis_receipt_ids_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES actors(actor_id),
+    created_at TEXT NOT NULL,
+    UNIQUE(claim_item_id, version)
+);
+CREATE TABLE IF NOT EXISTS draft_allocations (
+    draft_id TEXT NOT NULL REFERENCES liability_drafts(draft_id),
+    segment_id TEXT NOT NULL REFERENCES segment_contracts(segment_id),
+    carrier_org_id TEXT NOT NULL REFERENCES organizations(organization_id),
+    amount_minor INTEGER NOT NULL CHECK(amount_minor >= 0),
+    PRIMARY KEY(draft_id, segment_id)
+);
+CREATE TABLE IF NOT EXISTS draft_responses (
+    draft_id TEXT NOT NULL REFERENCES liability_drafts(draft_id),
+    org_id TEXT NOT NULL REFERENCES organizations(organization_id),
+    stance TEXT NOT NULL,
+    note TEXT NOT NULL,
+    actor_id TEXT NOT NULL REFERENCES actors(actor_id),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(draft_id, org_id)
+);
+CREATE TABLE IF NOT EXISTS claim_decisions (
+    decision_id TEXT PRIMARY KEY,
+    claim_item_id TEXT NOT NULL UNIQUE REFERENCES claim_items(claim_item_id),
+    draft_id TEXT NOT NULL REFERENCES liability_drafts(draft_id),
+    decided_via TEXT NOT NULL,
+    awarded_minor INTEGER NOT NULL CHECK(awarded_minor >= 0),
+    basis_receipt_ids_json TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES actors(actor_id),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS decision_allocations (
+    decision_id TEXT NOT NULL REFERENCES claim_decisions(decision_id),
+    segment_id TEXT NOT NULL REFERENCES segment_contracts(segment_id),
+    carrier_org_id TEXT NOT NULL REFERENCES organizations(organization_id),
+    amount_minor INTEGER NOT NULL CHECK(amount_minor >= 0),
+    PRIMARY KEY(decision_id, segment_id)
+);
+CREATE TABLE IF NOT EXISTS settlement_entries (
+    entry_id TEXT PRIMARY KEY,
+    claim_item_id TEXT NOT NULL REFERENCES claim_items(claim_item_id),
+    segment_id TEXT NOT NULL REFERENCES segment_contracts(segment_id),
+    payer_org_id TEXT NOT NULL REFERENCES organizations(organization_id),
+    payee_org_id TEXT NOT NULL REFERENCES organizations(organization_id),
+    amount_minor INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    review_id TEXT,
+    created_by TEXT NOT NULL REFERENCES actors(actor_id),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reviews (
+    review_id TEXT PRIMARY KEY,
+    claim_item_id TEXT NOT NULL REFERENCES claim_items(claim_item_id),
+    decision_id TEXT NOT NULL REFERENCES claim_decisions(decision_id),
+    trigger_evidence_id TEXT NOT NULL REFERENCES evidence_items(evidence_id),
+    status TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES actors(actor_id),
+    created_at TEXT NOT NULL,
+    closed_at TEXT
+);
 """
 
 
