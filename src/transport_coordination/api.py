@@ -9,18 +9,21 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .errors import DomainError, ValidationError
+from .claims_service import ClaimsService
 from .service import DomainService
 from .storage import Database
 
 
 def route(service: DomainService, method: str, path: str, body: dict[str, Any] | None,
-          headers: dict[str, str] | None = None) -> tuple[int, dict[str, Any]]:
+          headers: dict[str, str] | None = None, claims: ClaimsService | None = None
+          ) -> tuple[int, dict[str, Any]]:
     """把一个 HTTP 语义请求分派到领域服务。"""
 
     headers = headers or {}
     body = body or {}
     parsed = urlparse(path)
     actor_id = headers.get("X-Actor-Id", "")
+    claims = claims or ClaimsService(service.database)
     try:
         if method == "GET" and parsed.path == "/health":
             valid, count = service.verify_audit()
@@ -48,11 +51,57 @@ def route(service: DomainService, method: str, path: str, body: dict[str, Any] |
             query = parse_qs(parsed.query)
             after = int(query.get("after_sequence", ["0"])[0])
             return 200, {"items": service.audit_events(after)}
+        status, payload = _route_claims(claims, method, parsed, body, actor_id)
+        if status is not None:
+            return status, payload
         return 404, {"error": "route_not_found", "message": "接口不存在"}
     except DomainError as exc:
         return exc.status, {"error": exc.code, "message": str(exc)}
     except (TypeError, ValueError) as exc:
         return 400, {"error": "invalid_request", "message": str(exc)}
+
+
+def _route_claims(claims: ClaimsService, method: str, parsed, body: dict[str, Any],
+                  actor_id: str) -> tuple[int | None, dict[str, Any]]:
+    """分派一单制责任与索赔域的路由。"""
+
+    path = parsed.path
+    query = parse_qs(parsed.query)
+
+    def created(receipt) -> tuple[int, dict[str, Any]]:
+        return 200 if receipt.replayed else 201, receipt.__dict__
+
+    if method == "POST":
+        post_routes = {
+            "/waybills": claims.register_waybill,
+            "/segments": claims.add_segment,
+            "/containers": claims.add_container,
+            "/seals": claims.add_seal,
+            "/boundaries": claims.add_boundary,
+            "/handover-receipts": claims.submit_handover_receipt,
+            "/incidents": claims.report_incident,
+            "/evidence": claims.submit_evidence,
+            "/claim-items": claims.add_claim_item,
+            "/liability-drafts": claims.form_draft,
+            "/party-positions": claims.record_party_position,
+            "/decisions": claims.decide_claim,
+            "/reviews": claims.request_review,
+            "/settlement-entries": claims.add_recovery_entry,
+        }
+        handler = post_routes.get(path)
+        if handler is not None:
+            return created(handler(actor_id=actor_id, **body))
+    if method == "GET":
+        if path.startswith("/cases/"):
+            waybill_id = path[len("/cases/"):]
+            return 200, claims.get_case_bundle(actor_id, waybill_id)
+        if path == "/reconcile":
+            waybill_id = query.get("waybill_id", [None])[0]
+            return 200, claims.reconcile(actor_id, waybill_id)
+        if path.startswith("/decisions/") and path.endswith("/trace"):
+            decision_id = path[len("/decisions/"):-len("/trace")]
+            return 200, claims.decision_trace(actor_id, decision_id)
+    return None, {}
 
 
 class Handler(BaseHTTPRequestHandler):
